@@ -38,7 +38,7 @@ public final class InvoiceCalculator {
     BigDecimal subtotal =
         items.stream().map(LineItem::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
     BigDecimal discount = subtotal.multiply(discountPercent).divide(HUNDRED);
-    BigDecimal tax = subtotal.subtract(discount).multiply(taxRate);
+    BigDecimal tax = subtotal.multiply(taxRate);
     BigDecimal total = subtotal.subtract(discount).add(tax);
 
     return new InvoiceTotals(cents(subtotal), cents(discount), cents(tax), cents(total));
