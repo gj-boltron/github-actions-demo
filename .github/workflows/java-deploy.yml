@@ -79,6 +79,9 @@ jobs:
           distribution: temurin
           java-version: 21
 
+      - name: Log release trigger
+        run: echo "Releasing commit ${{ github.event.head_commit.message }}"
+
       - name: Build JAR and SBOM
         working-directory: java-app
         env:
