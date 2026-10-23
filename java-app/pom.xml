@@ -9,7 +9,7 @@
   <version>1.0.0</version>
   <packaging>jar</packaging>
   <name>invoice-service</name>
-  <description>Demo Java project for the GitHub Actions knowledge sharing session</description>
+  <description>Demo Java invoice service for the GitHub Actions knowledge sharing session</description>
 
   <properties>
     <maven.compiler.release>21</maven.compiler.release>
