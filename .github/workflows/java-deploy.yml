@@ -1,0 +1,115 @@
+name: Java Deploy
+
+# Automatic: runs when java-app/pom.xml changes on main, deploys only if its
+#            <version> has no release yet (bump the version = deploy).
+# Manual:    Actions tab -> Java Deploy -> Run workflow (re-deploys the current version).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "java-app/pom.xml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: java-deploy
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Detect version change
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+      should-deploy: ${{ steps.check.outputs.should-deploy }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          # Read <project><version> without needing Java/Maven on this job
+          version=$(python3 -c "import xml.etree.ElementTree as ET; print(ET.parse('java-app/pom.xml').getroot().find('{http://maven.apache.org/POM/4.0.0}version').text)")
+          tag="java-app-v${version}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            should_deploy=true
+          elif gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" > /dev/null 2>&1; then
+            should_deploy=false   # pom.xml changed but the version did not
+          else
+            should_deploy=true    # new version
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "should-deploy=${should_deploy}" >> "$GITHUB_OUTPUT"
+          echo "Version ${version} -> deploy: ${should_deploy}" >> "$GITHUB_STEP_SUMMARY"
+
+  ci:
+    name: CI
+    needs: version
+    if: needs.version.outputs.should-deploy == 'true'
+    permissions:
+      contents: read
+    uses: $/.github/workflows/java-ci.yml
+
+  release:
+    name: Release to production
+    needs: [version, ci]
+    # Only ever release from main, even when Run workflow is started on another branch.
+    # (Environments with required reviewers need a public repo or GitHub Enterprise; this check is free.)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release + tag
+    env:
+      MAVEN_ARGS: --batch-mode --no-transfer-progress
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No dependency cache here: never restore a shared cache into a release build
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Build JAR and SBOM
+        working-directory: java-app
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          ./mvnw package cyclonedx:makeBom -DskipTests
+          mkdir -p ../release
+          cp target/*.jar ../release/
+          cp target/bom.json "../release/invoice-service-${VERSION}-sbom.cdx.json"
+
+      # The deployment: a GitHub Release with the JAR + SBOM attached and notes generated
+      # from the PRs merged since the previous java-app release.
+      # Replace or extend this step for your real target (Maven repository, container registry, server...).
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # Manual re-run of an existing version: refresh the attached files
+            gh release upload "$TAG" release/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            previous=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName \
+              --jq '[.[].tagName | select(startswith("java-app-v"))][0] // empty')
+            notes_args=(--generate-notes)
+            if [ -n "$previous" ]; then notes_args+=(--notes-start-tag "$previous"); fi
+            gh release create "$TAG" release/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "java-app ${VERSION}" \
+              "${notes_args[@]}"
+          fi
+          echo "Released java-app ${VERSION} :rocket:" >> "$GITHUB_STEP_SUMMARY"

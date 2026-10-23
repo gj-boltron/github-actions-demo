@@ -1,0 +1,133 @@
+name: OSS Compliance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ts-app/package.json"
+      - "ts-app/pnpm-lock.yaml"
+      - "java-app/pom.xml"
+      - ".github/oss-policy.json"
+      - ".github/scripts/oss-report.mjs"
+      - ".github/workflows/oss-compliance.yml"
+  pull_request:
+    paths:
+      - "ts-app/package.json"
+      - "ts-app/pnpm-lock.yaml"
+      - "java-app/pom.xml"
+      - ".github/oss-policy.json"
+      - ".github/scripts/oss-report.mjs"
+      - ".github/workflows/oss-compliance.yml"
+  schedule:
+    - cron: "43 3 * * *" # daily: new CVEs are published against unchanged dependencies
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('oss-{0}', github.ref) || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  ts-app:
+    name: OSS report (ts-app)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/setup-ts
+      - uses: $/.github/actions/setup-osv-scanner
+
+      - name: Collect licenses and vulnerabilities
+        working-directory: ts-app
+        run: |
+          mkdir -p ../oss
+          pnpm licenses list --json        > ../oss/licenses-all.json
+          pnpm licenses list --json --prod > ../oss/licenses-runtime.json
+          # exit code 1 = vulnerabilities found; the policy below decides pass/fail
+          osv-scanner scan source --lockfile pnpm-lock.yaml --format json > ../oss/osv.json || [ $? -eq 1 ]
+
+      - name: Apply OSS policy
+        run: |
+          node .github/scripts/oss-report.mjs \
+            --project ts-app --ecosystem npm \
+            --licenses oss/licenses-all.json --licenses-runtime oss/licenses-runtime.json \
+            --osv oss/osv.json --out oss/oss-report-ts-app.csv
+
+      - name: Upload CSV report
+        if: ${{ !cancelled() }} # keep the report even when the policy fails
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: oss-report-ts-app
+          path: oss/oss-report-ts-app.csv
+          retention-days: 30
+
+  java-app:
+    name: OSS report (java-app)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      MAVEN_ARGS: --batch-mode --no-transfer-progress
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      - uses: $/.github/actions/setup-osv-scanner
+
+      - name: Collect licenses (CycloneDX SBOM) and vulnerabilities
+        working-directory: java-app
+        run: |
+          mkdir -p ../oss
+          ./mvnw cyclonedx:makeBom                                                # runtime deps -> bom.json
+          ./mvnw -Pe2e cyclonedx:makeBom -DincludeTestScope=true -DoutputName=bom-all.cdx # + test and e2e deps
+          cp target/bom.json ../oss/bom-runtime.json
+          cp target/bom-all.cdx.json ../oss/bom-all.cdx.json
+          osv-scanner scan source --lockfile target/bom-all.cdx.json --format json > ../oss/osv.json || [ $? -eq 1 ]
+
+      - name: Apply OSS policy
+        run: |
+          node .github/scripts/oss-report.mjs \
+            --project java-app --ecosystem maven \
+            --bom oss/bom-all.cdx.json --bom-runtime oss/bom-runtime.json \
+            --osv oss/osv.json --out oss/oss-report-java-app.csv
+
+      - name: Upload CSV report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: oss-report-java-app
+          path: oss/oss-report-java-app.csv
+          retention-days: 30
+
+  combined:
+    name: Combined OSS report
+    needs: [ts-app, java-app]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: oss-report-*
+          merge-multiple: true
+          path: reports
+      - name: Merge CSV files
+        run: |
+          first=$(ls reports/*.csv | head -n 1)
+          head -n 1 "$first" > oss-report-all.csv
+          for f in reports/*.csv; do tail -n +2 "$f" >> oss-report-all.csv; done
+          echo "Merged $(($(wc -l < oss-report-all.csv) - 1)) packages" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: oss-report-all
+          path: oss-report-all.csv
+          retention-days: 30

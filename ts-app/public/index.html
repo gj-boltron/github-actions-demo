@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Invoice Calculator</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 40rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      fieldset {
+        margin-bottom: 1rem;
+      }
+      .item {
+        display: grid;
+        grid-template-columns: 2fr 1fr 1fr;
+        gap: 0.5rem;
+        margin-bottom: 0.5rem;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+      }
+      [role="alert"] {
+        color: #b00020;
+        white-space: pre-line;
+      }
+      table {
+        border-collapse: collapse;
+        margin-top: 1rem;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.25rem 1rem 0.25rem 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Invoice Calculator</h1>
+
+    <!-- novalidate: let the server (zod) do the validation so the e2e tests exercise it -->
+    <form id="invoice" novalidate>
+      <fieldset>
+        <legend>Line items</legend>
+        <div id="items"></div>
+        <button type="button" id="add-item">Add item</button>
+      </fieldset>
+
+      <fieldset>
+        <legend>Rates</legend>
+        <label>Tax rate (%) <input id="tax-rate" type="number" step="any" value="12" /></label>
+        <label>Discount (%) <input id="discount" type="number" step="any" value="0" /></label>
+      </fieldset>
+
+      <button type="submit">Calculate</button>
+    </form>
+
+    <p role="alert" id="error"></p>
+
+    <table id="totals" hidden>
+      <caption>
+        Totals
+      </caption>
+      <tbody>
+        <tr>
+          <th scope="row">Subtotal</th>
+          <td data-testid="subtotal"></td>
+        </tr>
+        <tr>
+          <th scope="row">Discount</th>
+          <td data-testid="discount"></td>
+        </tr>
+        <tr>
+          <th scope="row">Tax</th>
+          <td data-testid="tax"></td>
+        </tr>
+        <tr>
+          <th scope="row">Total</th>
+          <td data-testid="total"></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <script type="module">
+      const items = document.getElementById("items");
+      const error = document.getElementById("error");
+      const totals = document.getElementById("totals");
+
+      function addItem() {
+        const n = items.children.length + 1;
+        const row = document.createElement("div");
+        row.className = "item";
+        row.innerHTML = `
+          <input aria-label="Description ${n}" placeholder="Description" name="description" />
+          <input aria-label="Quantity ${n}" type="number" value="1" name="quantity" />
+          <input aria-label="Unit price ${n}" type="number" step="any" value="0" name="unitPrice" />`;
+        items.append(row);
+      }
+
+      document.getElementById("add-item").addEventListener("click", addItem);
+      addItem();
+
+      document.getElementById("invoice").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const input = {
+          items: [...items.children].map((row) => ({
+            description: row.querySelector("[name=description]").value,
+            quantity: row.querySelector("[name=quantity]").valueAsNumber,
+            unitPrice: row.querySelector("[name=unitPrice]").valueAsNumber,
+          })),
+          taxRate: document.getElementById("tax-rate").valueAsNumber / 100,
+          discountPercent: document.getElementById("discount").valueAsNumber,
+        };
+
+        const response = await fetch("/api/invoice", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(input),
+        });
+        const body = await response.json();
+
+        if (!response.ok) {
+          error.textContent = body.error;
+          totals.hidden = true;
+          return;
+        }
+        error.textContent = "";
+        for (const key of ["subtotal", "discount", "tax", "total"]) {
+          document.querySelector(`[data-testid=${key}]`).textContent = body[key].toFixed(2);
+        }
+        totals.hidden = false;
+      });
+    </script>
+  </body>
+</html>

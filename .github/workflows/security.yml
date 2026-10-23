@@ -1,0 +1,61 @@
+name: Security
+
+# CodeQL is free for public repositories. A private repository needs a GitHub Code Security
+# (Advanced Security) license: both to upload results and under the CodeQL license terms.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 2 * * 1" # weekly, Monday 02:17 UTC: new CodeQL queries + new advisories
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('security-{0}', github.ref) || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # needed in private repositories
+      security-events: write # upload SARIF to the Security tab
+    strategy:
+      fail-fast: false
+      matrix:
+        # "actions" scans the workflow files themselves
+        language: [javascript-typescript, java-kotlin, actions]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none # no build needed, even for Java
+          queries: security-extended
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: /language:${{ matrix.language }}
+
+  zizmor:
+    name: Workflow security (zizmor)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Finds template injection, over-broad permissions, unpinned actions,
+      # credential persistence, cache poisoning... in .github/workflows and actions.
+      # advanced-security: false = print findings and fail the job instead of uploading
+      # SARIF to code scanning (which needs Advanced Security in a private repository).
+      - uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
+        with:
+          advanced-security: false
+          annotations: true

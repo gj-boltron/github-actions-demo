@@ -1,0 +1,179 @@
+name: Java CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "java-app/**"
+      - ".github/workflows/java-ci.yml"
+      - ".github/actions/setup-osv-scanner/**"
+  pull_request:
+    paths:
+      - "java-app/**"
+      - ".github/workflows/java-ci.yml"
+      - ".github/actions/setup-osv-scanner/**"
+  workflow_dispatch:
+  # Lets java-deploy.yml run the exact same checks before deploying
+  workflow_call:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('java-ci-{0}', github.ref) || github.run_id }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: java-app
+
+env:
+  MAVEN_ARGS: --batch-mode --no-transfer-progress
+
+jobs:
+  format:
+    name: Format check (Spotless)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      - run: ./mvnw spotless:check
+
+  lint:
+    name: Lint (Checkstyle + SpotBugs)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      # SpotBugs analyses bytecode, so compile first
+      - run: ./mvnw compile checkstyle:check spotbugs:check
+
+  typecheck:
+    name: Typecheck (javac -Werror)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      - run: ./mvnw test-compile
+
+  test:
+    name: Unit test (JUnit + JaCoCo)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      # verify = test + JaCoCo report + coverage gate
+      - run: ./mvnw verify
+      - name: Upload coverage and JUnit report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: java-app-test-reports
+          path: |
+            java-app/target/site/jacoco/
+            java-app/target/surefire-reports/
+          retention-days: 7
+
+  e2e:
+    name: E2E test (Playwright)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      # Chromium + its Linux system libraries, through the Playwright CLI bundled in the jar
+      - name: Install Chromium
+        run: >-
+          ./mvnw -Pe2e test-compile exec:java
+          -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.classpathScope=test
+          "-Dexec.args=install --with-deps chromium"
+      # Non-interactive run: starts InvoiceServer in the test, drives headless Chromium
+      - run: ./mvnw -Pe2e test
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1" # use the Chromium installed above
+      - name: Upload JUnit report and Playwright traces
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: java-app-e2e-report
+          path: |
+            java-app/target/surefire-reports/
+            java-app/target/playwright-traces/
+          retention-days: 7
+
+  audit:
+    name: Dependency audit (OSV-Scanner)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      - uses: $/.github/actions/setup-osv-scanner
+      # Resolve the full dependency tree into a CycloneDX SBOM, then scan it.
+      # This is Java's equivalent of `pnpm audit` (fails on any known vulnerability).
+      # -Pe2e adds the Playwright test dependencies so they are scanned too
+      - run: ./mvnw -Pe2e cyclonedx:makeBom -DincludeTestScope=true -DoutputName=bom-all.cdx
+      - run: osv-scanner scan source --lockfile target/bom-all.cdx.json
+
+  build:
+    name: Build package
+    needs: [format, lint, typecheck, test, e2e, audit]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      # Proves the JAR and SBOM build; java-deploy.yml builds the released copy itself
+      - run: ./mvnw package cyclonedx:makeBom -DskipTests

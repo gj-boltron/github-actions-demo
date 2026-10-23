@@ -1,0 +1,108 @@
+name: TS Deploy
+
+# Automatic: runs when ts-app/package.json changes on main, deploys only if its
+#            "version" has no release yet (bump the version = deploy).
+# Manual:    Actions tab -> TS Deploy -> Run workflow (re-deploys the current version).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ts-app/package.json"
+  workflow_dispatch:
+
+permissions: {}
+
+# One deployment at a time, never cancel a deployment half-way
+concurrency:
+  group: ts-deploy
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Detect version change
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+      should-deploy: ${{ steps.check.outputs.should-deploy }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          version=$(node -p "require('./ts-app/package.json').version")
+          tag="ts-app-v${version}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            should_deploy=true
+          elif gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" > /dev/null 2>&1; then
+            should_deploy=false   # package.json changed but the version did not
+          else
+            should_deploy=true    # new version
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "should-deploy=${should_deploy}" >> "$GITHUB_OUTPUT"
+          echo "Version ${version} -> deploy: ${should_deploy}" >> "$GITHUB_STEP_SUMMARY"
+
+  ci:
+    name: CI
+    needs: version
+    if: needs.version.outputs.should-deploy == 'true'
+    permissions:
+      contents: read
+    # Reusable workflow: the same format/lint/typecheck/test/audit/build as every PR
+    uses: $/.github/workflows/ts-ci.yml
+
+  release:
+    name: Release to production
+    needs: [version, ci]
+    # Only ever release from main, even when Run workflow is started on another branch.
+    # (Environments with required reviewers need a public repo or GitHub Enterprise; this check is free.)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release + tag
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/setup-ts
+        with:
+          cache: "false" # never restore a shared cache into a release build (cache poisoning)
+
+      - name: Build package
+        working-directory: ts-app
+        run: |
+          pnpm build
+          pnpm pack --pack-destination ../release
+
+      # The deployment: a GitHub Release with the package attached and notes generated
+      # from the PRs merged since the previous ts-app release.
+      # Replace or extend this step for your real target (npm publish, Azure, AWS, a server...).
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # Manual re-run of an existing version: refresh the attached files
+            gh release upload "$TAG" release/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            previous=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName \
+              --jq '[.[].tagName | select(startswith("ts-app-v"))][0] // empty')
+            notes_args=(--generate-notes)
+            if [ -n "$previous" ]; then notes_args+=(--notes-start-tag "$previous"); fi
+            gh release create "$TAG" release/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "ts-app ${VERSION}" \
+              "${notes_args[@]}"
+          fi
+          echo "Released ts-app ${VERSION} :rocket:" >> "$GITHUB_STEP_SUMMARY"

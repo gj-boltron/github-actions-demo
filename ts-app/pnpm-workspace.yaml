@@ -1,0 +1,4 @@
+# pnpm 11 blocks dependency install scripts unless listed here.
+# esbuild (used by tsx for `pnpm dev`) works without its postinstall check, so keep it off.
+allowBuilds:
+  esbuild: false

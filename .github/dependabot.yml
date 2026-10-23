@@ -1,0 +1,39 @@
+version: 2
+
+updates:
+  - package-ecosystem: npm # also handles pnpm-lock.yaml
+    directory: /ts-app
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7 # let new releases age a week (protects against hijacked packages)
+    groups:
+      dev-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
+    ignore:
+      # typescript-eslint does not support TypeScript 7 yet
+      - dependency-name: typescript
+        versions: [">=7"]
+
+  - package-ecosystem: maven
+    directory: /java-app
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      maven-plugins:
+        patterns: ["*plugin*"]
+
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
