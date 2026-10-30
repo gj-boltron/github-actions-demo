@@ -20,7 +20,7 @@
     <exec.mainClass>com.example.invoice.InvoiceServer</exec.mainClass>
     <!-- E2E tests (-Pe2e): true shows the browser in slow motion -->
     <e2e.headed>false</e2e.headed>
-    <playwright.version>1.63.0</playwright.version>
+    <playwright.version>1.64.0</playwright.version>
   </properties>
 
   <dependencyManagement>
