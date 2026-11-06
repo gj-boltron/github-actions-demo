@@ -74,7 +74,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>3.6.0</version>
+        <version>3.6.1</version>
       </plugin>
 
       <plugin>
@@ -145,7 +145,7 @@
       <plugin>
         <groupId>org.jacoco</groupId>
         <artifactId>jacoco-maven-plugin</artifactId>
-        <version>0.8.15</version>
+        <version>0.8.16</version>
         <configuration>
           <excludes>
             <!-- Covered by the Playwright E2E tests, not by unit tests -->
