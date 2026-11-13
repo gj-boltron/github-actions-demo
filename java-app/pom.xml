@@ -74,7 +74,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>3.6.0</version>
+        <version>3.6.1</version>
       </plugin>
 
       <plugin>
@@ -87,7 +87,7 @@
       <plugin>
         <groupId>com.diffplug.spotless</groupId>
         <artifactId>spotless-maven-plugin</artifactId>
-        <version>3.10.4</version>
+        <version>3.11.0</version>
         <configuration>
           <java>
             <!-- Uses the google-java-format version bundled with Spotless -->
@@ -145,7 +145,7 @@
       <plugin>
         <groupId>org.jacoco</groupId>
         <artifactId>jacoco-maven-plugin</artifactId>
-        <version>0.8.15</version>
+        <version>0.8.16</version>
         <configuration>
           <excludes>
             <!-- Covered by the Playwright E2E tests, not by unit tests -->
@@ -228,7 +228,7 @@
           <plugin>
             <groupId>org.codehaus.mojo</groupId>
             <artifactId>build-helper-maven-plugin</artifactId>
-            <version>3.6.2</version>
+            <version>3.7.0</version>
             <executions>
               <execution>
                 <id>add-e2e-sources</id>
